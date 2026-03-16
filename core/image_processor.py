@@ -349,17 +349,26 @@ def _segmentByGMM(normalized_image, thresholds, scale_mask=None):
     return mask_pore, mask_lower, mask_upper, mask_alpha
 
 
-def segmentAndClassify(normalized_image, thresholds, params, original_image, scale_mask=None):
+def segmentAndClassify(normalized_image, thresholds, params, original_image,
+                       scale_mask=None, pore_image=None):
     total_pixels = normalized_image.size
     use_gmm = params.get('use_gmm', False)
+
+    # 기공 검출 소스: CLAHE ON이면 pre-CLAHE 이미지, OFF이면 normalized와 동일
+    pore_src = pore_image if pore_image is not None else normalized_image
 
     if use_gmm:
         # --- GMM 자동 분류: 기공/Alpha-Al은 임계값 유지, Si/IM 경계만 GMM 자동 탐지 ---
         mask_pore, mask_lower, mask_upper, mask_alpha = _segmentByGMM(normalized_image, thresholds, scale_mask)
+        # GMM도 기공은 pore_src로 재검출
+        mask_pore = cv2.inRange(pore_src, 0, thresholds['pore'][1])
+        if scale_mask is not None:
+            mask_pore[scale_mask > 0] = 0
     else:
         # --- 수동 임계값 분류 ---
-        # 1. 기공 / 알파-Al: 절대 밝기로 분리
-        mask_pore  = cv2.inRange(normalized_image, 0, thresholds['pore'][1])
+        # 1. 기공: pre-CLAHE 이미지로 검출 (CLAHE가 Si를 기공 범위로 밀어내는 현상 방지)
+        mask_pore  = cv2.inRange(pore_src, 0, thresholds['pore'][1])
+        # Alpha-Al: CLAHE 이미지로 검출 (대비 보정 후가 더 정확)
         mask_alpha = cv2.inRange(normalized_image, thresholds['alpha_al'][0], 255)
 
         if scale_mask is not None:
@@ -527,4 +536,13 @@ def analyzeImage(image_path, thresholds, all_params):
     scale_mask = detectScaleBarMask(gray)
     blur_k = all_params.get('median_blur_kernel', settings.MEDIAN_BLUR_KERNEL)
     norm = normalizeImage(gray, blur_k)
-    return segmentAndClassify(norm, thresholds, all_params, original_image, scale_mask)
+
+    # 기공 감지용: CLAHE 없이 블러만 적용한 이미지
+    # CLAHE는 Si/IM이 많은 어두운 타일에서 Si 픽셀을 0~40 범위로 눌러내려 기공으로 오분류시킴.
+    # 진짜 기공(물리적 공동)은 원본에서도 gray≈0~15로 절대적으로 어두우므로
+    # CLAHE 전 이미지에서 검출해도 정확하게 잡힌다.
+    k = blur_k if blur_k % 2 == 1 else blur_k + 1
+    pore_image = cv2.medianBlur(gray, k) if settings.USE_CLAHE else norm
+
+    return segmentAndClassify(norm, thresholds, all_params, original_image, scale_mask,
+                              pore_image=pore_image)
