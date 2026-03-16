@@ -69,5 +69,8 @@ EROSION_RADIUS = 5  # px (목 너비 < radius×2 px 이면 분리)
 
 # CLAHE 파라미터: 사진 간 조명/에칭 차이 보정용 (False로 끄면 기존 방식)
 USE_CLAHE = True
+
+# GMM 자동 분류: True면 수동 임계값 대신 GMM(4-component)으로 초기 마스크 생성
+USE_GMM = False
 CLAHE_CLIP_LIMIT = 1.0
 CLAHE_TILE_SIZE = (8, 8)

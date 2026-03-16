@@ -1,8 +1,4 @@
-opencv-python
-numpy
-scikit-image
-scipy
-pandas
-matplotlib
-tqdm
-pyyaml
+PyQt5==5.15.10
+opencv-python==4.9.0.80
+numpy==1.26.4
+scikit-learn

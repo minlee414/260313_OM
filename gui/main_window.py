@@ -184,6 +184,10 @@ class MainWindow(QMainWindow):
         self.chk_clahe.setChecked(settings.USE_CLAHE)
         self.chk_clahe.stateChanged.connect(self._onClaheToggle)
 
+        self.chk_gmm = QCheckBox("GMM 자동 분류 — 임계값 자동 탐지 (활성화 시 위 밝기 범위 무시)")
+        self.chk_gmm.setChecked(settings.USE_GMM)
+        self.chk_gmm.stateChanged.connect(self._onGmmToggle)
+
         # Watershed 입자 분리 (상별 개별 체크박스)
         ws = settings.WATERSHED_PHASES
         self.chk_ws_si    = QCheckBox("Si")
@@ -288,8 +292,9 @@ class MainWindow(QMainWindow):
         excl_lay.addStretch()
         p_lay.addWidget(excl_w,                      7, 0, 1, 4)
         p_lay.addWidget(self.chk_clahe,              8, 0, 1, 4)
+        p_lay.addWidget(self.chk_gmm,                9, 0, 1, 4)
 
-        # 9행: Watershed (상별 개별)
+        # 10행: Watershed (상별 개별)
         ws_w = QWidget(); ws_lay = QHBoxLayout(ws_w); ws_lay.setContentsMargins(0,0,0,0)
         ws_lay.addWidget(QLabel("Watershed:"))
         ws_lay.addWidget(self.chk_ws_si)
@@ -300,9 +305,9 @@ class MainWindow(QMainWindow):
         ws_lay.addWidget(self.sp_ws_ratio)
         ws_lay.addWidget(QLabel("(낮을수록 많이 나눔)"))
         ws_lay.addStretch()
-        p_lay.addWidget(ws_w,                        9, 0, 1, 4)
+        p_lay.addWidget(ws_w,                        10, 0, 1, 4)
 
-        # 10행: 침식 분리
+        # 11행: 침식 분리
         er_w = QWidget(); er_lay = QHBoxLayout(er_w); er_lay.setContentsMargins(0,0,0,0)
         er_lay.addWidget(QLabel("침식 분리:"))
         er_lay.addWidget(self.chk_er_si)
@@ -313,7 +318,7 @@ class MainWindow(QMainWindow):
         er_lay.addWidget(self.sp_er_radius)
         er_lay.addWidget(QLabel("px  (반경×2 미만 목은 분리)"))
         er_lay.addStretch()
-        p_lay.addWidget(er_w,                        10, 0, 1, 4)
+        p_lay.addWidget(er_w,                        11, 0, 1, 4)
 
         # 글씨 크기 통일 (파라미터 패널 전체)
         p_grp.setStyleSheet("""
@@ -385,6 +390,12 @@ class MainWindow(QMainWindow):
     def _onClaheToggle(self, state):
         settings.USE_CLAHE = bool(state)
 
+    def _onGmmToggle(self, state):
+        enabled = not bool(state)
+        for w in [self.sp_p_u, self.sp_si_l, self.sp_si_u,
+                  self.sp_im_l, self.sp_im_u, self.sp_a_l]:
+            w.setEnabled(enabled)
+
     def _currentParams(self):
         thresh = {
             'pore':          (0, self.sp_p_u.value()),
@@ -426,7 +437,8 @@ class MainWindow(QMainWindow):
                             'pore':          self.chk_er_pore.isChecked(),
                         },
                         'erosion_radius': self.sp_er_radius.value(),
-                        'median_blur_kernel': self.sp_blur.value()}
+                        'median_blur_kernel': self.sp_blur.value(),
+                        'use_gmm': self.chk_gmm.isChecked()}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")
