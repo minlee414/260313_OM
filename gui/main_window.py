@@ -180,6 +180,14 @@ class MainWindow(QMainWindow):
         self.sp_al_excl.setValue(settings.AL_EXCLUSION_RADIUS)
         self.sp_al_excl.setSpecialValueText("0 (끔)")
 
+        # Alpha-Al 최소 두께 (내접원 반지름): Watershed 슬라이버 파편 제거
+        self.sp_al_min_width = QSpinBox()
+        self.sp_al_min_width.setRange(0, 50)
+        self.sp_al_min_width.setValue(settings.AL_MIN_WIDTH_PX)
+        self.sp_al_min_width.setSpecialValueText("0 (끔)")
+        self.sp_al_min_width.setMinimumWidth(80)
+        self.sp_al_min_width.setStyleSheet("font-size: 14px; padding: 2px;")
+
         self.chk_clahe = QCheckBox("CLAHE 정규화 사용 (조명/에칭 차이 보정)")
         self.chk_clahe.setChecked(settings.USE_CLAHE)
         self.chk_clahe.stateChanged.connect(self._onClaheToggle)
@@ -291,10 +299,18 @@ class MainWindow(QMainWindow):
         excl_lay.addWidget(QLabel("px   (경계 그래디언트 → IM 오분류 방지, 0=끔)"))
         excl_lay.addStretch()
         p_lay.addWidget(excl_w,                      7, 0, 1, 4)
-        p_lay.addWidget(self.chk_clahe,              8, 0, 1, 4)
-        p_lay.addWidget(self.chk_gmm,                9, 0, 1, 4)
 
-        # 10행: Watershed (상별 개별)
+        # 8행: Alpha-Al 최소 두께 (Watershed 슬라이버 제거)
+        alw_w = QWidget(); alw_lay = QHBoxLayout(alw_w); alw_lay.setContentsMargins(0,0,0,0)
+        alw_lay.addWidget(QLabel("Al 최소 두께 (내접원 반지름):"))
+        alw_lay.addWidget(self.sp_al_min_width)
+        alw_lay.addWidget(QLabel("px  (Watershed 후 얇은 파편 제거, 0=끔)"))
+        alw_lay.addStretch()
+        p_lay.addWidget(alw_w,                       8, 0, 1, 4)
+        p_lay.addWidget(self.chk_clahe,              9, 0, 1, 4)
+        p_lay.addWidget(self.chk_gmm,                10, 0, 1, 4)
+
+        # 11행: Watershed (상별 개별)
         ws_w = QWidget(); ws_lay = QHBoxLayout(ws_w); ws_lay.setContentsMargins(0,0,0,0)
         ws_lay.addWidget(QLabel("Watershed:"))
         ws_lay.addWidget(self.chk_ws_si)
@@ -305,9 +321,9 @@ class MainWindow(QMainWindow):
         ws_lay.addWidget(self.sp_ws_ratio)
         ws_lay.addWidget(QLabel("(낮을수록 많이 나눔)"))
         ws_lay.addStretch()
-        p_lay.addWidget(ws_w,                        10, 0, 1, 4)
+        p_lay.addWidget(ws_w,                        11, 0, 1, 4)
 
-        # 11행: 침식 분리
+        # 12행: 침식 분리
         er_w = QWidget(); er_lay = QHBoxLayout(er_w); er_lay.setContentsMargins(0,0,0,0)
         er_lay.addWidget(QLabel("침식 분리:"))
         er_lay.addWidget(self.chk_er_si)
@@ -318,7 +334,7 @@ class MainWindow(QMainWindow):
         er_lay.addWidget(self.sp_er_radius)
         er_lay.addWidget(QLabel("px  (반경×2 미만 목은 분리)"))
         er_lay.addStretch()
-        p_lay.addWidget(er_w,                        11, 0, 1, 4)
+        p_lay.addWidget(er_w,                        12, 0, 1, 4)
 
         # 글씨 크기 통일 (파라미터 패널 전체)
         p_grp.setStyleSheet("""
@@ -438,7 +454,8 @@ class MainWindow(QMainWindow):
                         },
                         'erosion_radius': self.sp_er_radius.value(),
                         'median_blur_kernel': self.sp_blur.value(),
-                        'use_gmm': self.chk_gmm.isChecked()}
+                        'use_gmm': self.chk_gmm.isChecked(),
+                        'al_min_width_px': self.sp_al_min_width.value()}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")

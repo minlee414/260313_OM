@@ -46,6 +46,9 @@ MAX_AREAS = {
 SI_EXCLUSION_RADIUS = 3
 AL_EXCLUSION_RADIUS = 3  # Al 경계 근처 IM 제거 반경 (Al-IM 그래디언트 방지), 0=끔
 
+# Alpha-Al 최소 두께 (내접원 반지름, px): Watershed 후 얇은 슬라이버 파편 제거용. 0=끔
+AL_MIN_WIDTH_PX = 0
+
 # Watershed 입자 분리: 서로 붙어있는 입자를 경계선으로 나눔 (상별 개별 설정)
 # DIST_RATIO: 거리 변환 최댓값 대비 전경 마커 임계 비율 (0.1~0.9)
 #   낮을수록 더 많이 나눔(과분할 위험), 높을수록 덜 나눔(분리 부족 위험)

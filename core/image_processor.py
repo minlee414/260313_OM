@@ -25,9 +25,13 @@ def normalizeImage(gray_image, blur_kernel=None):
     return cv2.medianBlur(img, k)
 
 
-def analyzeFeatures(mask, min_area_filter, phase_label):
+def analyzeFeatures(mask, min_area_filter, phase_label, min_width_px=0):
     """
     마스크에서 개별 입자를 분리하고, 각 입자의 형상 및 크기 데이터를 반환.
+
+    min_width_px: 거리 변환 최댓값(= 내접원 반지름) 하한 (px).
+        이 값보다 얇은 파편은 제외. 0=끔.
+        Watershed 후 Alpha-Al 슬라이버 제거에 유용.
 
     Returns:
         features (list of dict): 입자별 상세 데이터
@@ -49,6 +53,12 @@ def analyzeFeatures(mask, min_area_filter, phase_label):
                       stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
         roi_labels = labels[y:y+h, x:x+w]
         single_obj_mask_roi = (roi_labels == i).astype(np.uint8)
+
+        # 최소 두께 필터: 거리 변환 최댓값 = 내접원 반지름 = 파편의 가장 두꺼운 지점
+        if min_width_px > 0:
+            dist_roi = cv2.distanceTransform(single_obj_mask_roi * 255, cv2.DIST_L2, 5)
+            if dist_roi.max() < min_width_px:
+                continue
 
         contours, _ = cv2.findContours(single_obj_mask_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
@@ -476,14 +486,19 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image,
     mask_alpha = _separate(mask_alpha, 'alpha_al')
 
     pore_feats,  final_pore_mask  = analyzeFeatures(mask_pore,  params['min_areas']['pore'],    'pore')
-    alpha_feats, final_alpha_mask = analyzeFeatures(mask_alpha, params['min_areas']['alpha_al'], 'alpha_al')
+    al_min_w = params.get('al_min_width_px', settings.AL_MIN_WIDTH_PX)
+    alpha_feats, final_alpha_mask = analyzeFeatures(mask_alpha, params['min_areas']['alpha_al'],
+                                                    'alpha_al', min_width_px=al_min_w)
 
     # 4. 분율 계산
+    # Alpha-Al 분율은 min_area 필터 전 전체 픽셀 기준:
+    #   Watershed 소파편(<min_area)도 물리적으로는 Alpha-Al이므로 분율에는 포함.
+    #   ECD 통계(final_alpha_mask)는 min_area 이상의 의미있는 수지상 셀만 사용.
     data = {
         'pore_fraction':          (np.count_nonzero(final_pore_mask)  / total_pixels) * 100,
         'eutectic_si_fraction':   (np.count_nonzero(final_si_mask)    / total_pixels) * 100,
         'intermetallic_fraction': (np.count_nonzero(final_inter_mask) / total_pixels) * 100,
-        'alpha_al_fraction':      (np.count_nonzero(final_alpha_mask) / total_pixels) * 100,
+        'alpha_al_fraction':      (np.count_nonzero(mask_alpha)       / total_pixels) * 100,
     }
 
     # 5. 입자별 상세 데이터 (roi_mask 제외하고 저장용으로 전달)

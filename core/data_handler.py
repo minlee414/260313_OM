@@ -20,6 +20,9 @@ def _saveSummaryCsv(image_filename, analysis_data):
                 'filename',
                 'alpha_al_fraction_%', 'eutectic_si_fraction_%',
                 'intermetallic_fraction_%', 'pore_fraction_%',
+                'alpha_al_count',
+                'alpha_al_ecd_mean_um', 'alpha_al_ecd_std_um',
+                'alpha_al_ecd_min_um',  'alpha_al_ecd_max_um',
                 'si_count', 'si_ecd_mean_um', 'si_ecd_std_um', 'si_ecd_min_um', 'si_ecd_max_um',
                 'im_count', 'im_ecd_mean_um', 'im_ecd_std_um', 'im_ecd_min_um', 'im_ecd_max_um',
                 'pore_count', 'pore_ecd_mean_um', 'pore_ecd_std_um', 'pore_ecd_min_um', 'pore_ecd_max_um',
@@ -32,7 +35,7 @@ def _saveSummaryCsv(image_filename, analysis_data):
             f"{analysis_data.get('intermetallic_fraction', 0):.4f}",
             f"{analysis_data.get('pore_fraction', 0):.4f}",
         ]
-        for phase in ('eutectic_si', 'intermetallic', 'pore'):
+        for phase in ('alpha_al', 'eutectic_si', 'intermetallic', 'pore'):
             s = stats.get(phase, {})
             row += [
                 s.get('count', 0),
