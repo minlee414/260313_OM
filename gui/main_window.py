@@ -491,7 +491,12 @@ class MainWindow(QMainWindow):
         if not self.current_image_path:
             return
         thresh, params = self._currentParams()
-        res, data = analyzeImage(self.current_image_path, thresh, params)
+        try:
+            res, data = analyzeImage(self.current_image_path, thresh, params)
+        except Exception:
+            import traceback
+            QMessageBox.critical(self, "분석 오류", traceback.format_exc())
+            return
         if res is not None:
             self.displayImage(self.viewer_result, res)
             self.txt.setText(self._formatResult(data))

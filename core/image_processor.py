@@ -325,7 +325,8 @@ def _segmentByGMM(normalized_image, scale_mask=None):
           f"im={means_sorted[2]:.1f}  alpha_al={means_sorted[3]:.1f}")
 
     def _make(idx):
-        m = np.where(phase_img == idx, np.uint8(255), np.uint8(0))
+        m = np.zeros(normalized_image.shape, dtype=np.uint8)
+        m[phase_img == idx] = 255
         if scale_mask is not None:
             m[scale_mask > 0] = 0
         return m
