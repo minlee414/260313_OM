@@ -184,7 +184,7 @@ class MainWindow(QMainWindow):
         self.chk_clahe.setChecked(settings.USE_CLAHE)
         self.chk_clahe.stateChanged.connect(self._onClaheToggle)
 
-        self.chk_gmm = QCheckBox("GMM 자동 분류 — 임계값 자동 탐지 (활성화 시 위 밝기 범위 무시)")
+        self.chk_gmm = QCheckBox("GMM 자동 분류 — Si/IM 경계 자동 탐지 (기공·Al 임계값은 유지)")
         self.chk_gmm.setChecked(settings.USE_GMM)
         self.chk_gmm.stateChanged.connect(self._onGmmToggle)
 
@@ -391,9 +391,9 @@ class MainWindow(QMainWindow):
         settings.USE_CLAHE = bool(state)
 
     def _onGmmToggle(self, state):
+        # GMM ON: Si/IM 범위 스핀박스만 비활성 (기공·Alpha-Al 임계값은 GMM도 사용)
         enabled = not bool(state)
-        for w in [self.sp_p_u, self.sp_si_l, self.sp_si_u,
-                  self.sp_im_l, self.sp_im_u, self.sp_a_l]:
+        for w in [self.sp_si_l, self.sp_si_u, self.sp_im_l, self.sp_im_u]:
             w.setEnabled(enabled)
 
     def _currentParams(self):

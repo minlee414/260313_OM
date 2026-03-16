@@ -279,59 +279,74 @@ def _applyErosionSeparation(mask, radius):
     return separated_mask, boundary_mask
 
 
-def _segmentByGMM(normalized_image, scale_mask=None):
+def _segmentByGMM(normalized_image, thresholds, scale_mask=None):
     """
-    4-component GMM으로 픽셀을 4상(기공/Si/IM/Alpha-Al)으로 분류.
-    평균 밝기 기준 오름차순: 0=pore, 1=si, 2=intermetallic, 3=alpha_al
+    하이브리드 GMM: 기공/Alpha-Al은 수동 임계값 유지, Si/IM 경계만 GMM(n=2)으로 자동 탐지.
+
+    Alpha-Al이 70~80%를 차지해 4-component GMM으로는 성분이 낭비되므로,
+    pore_upper ~ alpha_lower 사이의 중간 구간 픽셀만 GMM에 입력하여
+    Si(어두운 쪽) / IM(밝은 쪽) 경계를 자동으로 찾는다.
 
     Returns:
         mask_pore, mask_si, mask_im, mask_alpha  (각 255/0 이진 마스크)
     """
     from sklearn.mixture import GaussianMixture
 
-    h, w = normalized_image.shape
+    pore_hi = thresholds['pore'][1]
+    al_lo   = thresholds['alpha_al'][0]
+    mid_lo  = pore_hi + 1
+    mid_hi  = al_lo - 1
 
-    # 유효 픽셀 추출 (스케일 바 제외)
+    # 기공 / Alpha-Al은 수동 임계값
+    mask_pore  = cv2.inRange(normalized_image, 0, pore_hi)
+    mask_alpha = cv2.inRange(normalized_image, al_lo, 255)
     if scale_mask is not None:
-        valid_flat = normalized_image[scale_mask == 0].reshape(-1, 1).astype(np.float32)
-    else:
-        valid_flat = normalized_image.reshape(-1, 1).astype(np.float32)
+        mask_pore [scale_mask > 0] = 0
+        mask_alpha[scale_mask > 0] = 0
 
-    # 속도 위해 최대 200k 픽셀 무작위 샘플링
+    # 중간 구간 마스크 (Si + IM 후보)
+    if mid_lo > mid_hi:
+        # 범위가 없으면 전부 Si 처리
+        return mask_pore, np.zeros_like(mask_pore), np.zeros_like(mask_pore), mask_alpha
+
+    mask_mid = cv2.inRange(normalized_image, mid_lo, mid_hi)
+    if scale_mask is not None:
+        mask_mid[scale_mask > 0] = 0
+
+    mid_coords = np.where(mask_mid > 0)
+    mid_pixels = normalized_image[mid_coords].reshape(-1, 1).astype(np.float32)
+
+    if len(mid_pixels) < 20:
+        return mask_pore, mask_mid, np.zeros_like(mask_mid), mask_alpha
+
     rng = np.random.RandomState(42)
-    if len(valid_flat) > 200000:
-        idx = rng.choice(len(valid_flat), 200000, replace=False)
-        sample = valid_flat[idx]
-    else:
-        sample = valid_flat
+    sample = mid_pixels
+    if len(mid_pixels) > 200000:
+        idx = rng.choice(len(mid_pixels), 200000, replace=False)
+        sample = mid_pixels[idx]
 
-    gmm = GaussianMixture(n_components=4, covariance_type='full',
+    gmm = GaussianMixture(n_components=2, covariance_type='full',
                           n_init=5, random_state=42, max_iter=300)
     gmm.fit(sample)
 
-    # 전체 이미지 예측
-    labels = gmm.predict(normalized_image.reshape(-1, 1).astype(np.float32))
-    labels = labels.reshape(h, w)
+    labels = gmm.predict(mid_pixels)
 
-    # 평균 밝기 오름차순으로 phase 할당: 어두운 순 → pore, si, im, alpha_al
-    order = np.argsort(gmm.means_.flatten())  # order[i] = i번째로 어두운 component 번호
-    remap = np.empty(4, dtype=np.uint8)
-    for phase_idx, comp_idx in enumerate(order):
-        remap[comp_idx] = phase_idx
-    phase_img = remap[labels]  # 0=pore, 1=si, 2=im, 3=alpha_al
+    # 어두운 쪽 = Si, 밝은 쪽 = IM
+    order    = np.argsort(gmm.means_.flatten())
+    si_label = order[0]
+    im_label = order[1]
 
-    means_sorted = gmm.means_.flatten()[order]
-    print(f"[GMM] pore={means_sorted[0]:.1f}  si={means_sorted[1]:.1f}  "
-          f"im={means_sorted[2]:.1f}  alpha_al={means_sorted[3]:.1f}")
+    means = gmm.means_.flatten()
+    print(f"[GMM] pore≤{pore_hi}  |  si_mean={means[si_label]:.1f}  "
+          f"im_mean={means[im_label]:.1f}  |  alpha_al≥{al_lo}")
 
-    def _make(idx):
-        m = np.zeros(normalized_image.shape, dtype=np.uint8)
-        m[phase_img == idx] = 255
-        if scale_mask is not None:
-            m[scale_mask > 0] = 0
-        return m
+    mask_lower = np.zeros(normalized_image.shape, dtype=np.uint8)
+    mask_upper = np.zeros(normalized_image.shape, dtype=np.uint8)
+    rows, cols = mid_coords
+    mask_lower[rows[labels == si_label], cols[labels == si_label]] = 255
+    mask_upper[rows[labels == im_label], cols[labels == im_label]] = 255
 
-    return _make(0), _make(1), _make(2), _make(3)
+    return mask_pore, mask_lower, mask_upper, mask_alpha
 
 
 def segmentAndClassify(normalized_image, thresholds, params, original_image, scale_mask=None):
@@ -339,8 +354,8 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image, sca
     use_gmm = params.get('use_gmm', False)
 
     if use_gmm:
-        # --- GMM 자동 분류: 임계값 대신 GMM이 초기 마스크 생성 ---
-        mask_pore, mask_lower, mask_upper, mask_alpha = _segmentByGMM(normalized_image, scale_mask)
+        # --- GMM 자동 분류: 기공/Alpha-Al은 임계값 유지, Si/IM 경계만 GMM 자동 탐지 ---
+        mask_pore, mask_lower, mask_upper, mask_alpha = _segmentByGMM(normalized_image, thresholds, scale_mask)
     else:
         # --- 수동 임계값 분류 ---
         # 1. 기공 / 알파-Al: 절대 밝기로 분리
