@@ -188,17 +188,17 @@ def detectScaleBarMask(gray_image):
     return scale_mask
 
 
-def _applyWatershed(mask, dist_ratio=0.4):
+def _applyWatershed(mask, dist_ratio=0.4, min_seed_dist=0):
     """
     Distance transform + Watershed으로 서로 붙어있는 입자를 분리.
 
-    원리:
-      1. 각 픽셀에서 가장 가까운 배경(0)까지의 거리를 계산 (거리 변환)
-      2. 거리가 충분히 큰 픽셀 = 입자 내부 중심 → 전경 마커로 지정
-      3. 여러 마커 사이의 경계를 물이 흘러내려 만나는 지점처럼 계산 → 경계선
-
     dist_ratio: 거리 최댓값의 몇 배 이상이어야 전경 마커로 인정할지 (0.1~0.9)
       낮으면 많이 나눔(과분할 위험), 높으면 덜 나눔
+
+    min_seed_dist: 씨앗이 될 수 있는 최소 거리 변환값 (px, 절대값).
+      거리 변환 최댓값이 이 값 미만인 영역은 씨앗을 받지 못해
+      이웃한 더 큰 영역으로 흡수됨 → 얇은 파편이 별도 분리되지 않고 합쳐짐.
+      0 = 끔 (dist_ratio만 사용)
 
     Returns:
         separated_mask: 경계가 제거된 분리 마스크 (analyzeFeatures 입력용)
@@ -214,6 +214,11 @@ def _applyWatershed(mask, dist_ratio=0.4):
     # 확실한 전경: 거리가 충분히 큰 픽셀 (각 입자의 중심 부근)
     _, sure_fg = cv2.threshold(dist, dist_ratio * dist.max(), 255, 0)
     sure_fg = sure_fg.astype(np.uint8)
+
+    # 절대 최소 거리 필터: 이 값보다 얇은 영역의 씨앗 제거 → 이웃 영역으로 흡수
+    if min_seed_dist > 0:
+        sure_fg[dist < min_seed_dist] = 0
+
     if not np.any(sure_fg):
         return mask.copy(), np.zeros_like(mask)
 
@@ -418,10 +423,11 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image,
     # 5. 밝기 구간으로 직접 분리
     #    하단 구간 → Eutectic Si
     #    상단 구간 → Intermetallic
-    ws_phases  = params.get('watershed_phases',  settings.WATERSHED_PHASES)
-    ws_ratio   = params.get('watershed_dist_ratio', settings.WATERSHED_DIST_RATIO)
-    er_phases  = params.get('erosion_phases',    settings.EROSION_PHASES)
-    er_radius  = params.get('erosion_radius',    settings.EROSION_RADIUS)
+    ws_phases      = params.get('watershed_phases',    settings.WATERSHED_PHASES)
+    ws_ratio       = params.get('watershed_dist_ratio', settings.WATERSHED_DIST_RATIO)
+    er_phases      = params.get('erosion_phases',       settings.EROSION_PHASES)
+    er_radius      = params.get('erosion_radius',       settings.EROSION_RADIUS)
+    al_min_seed    = params.get('al_min_width_px',      settings.AL_MIN_WIDTH_PX)
 
     # 상별 경계 마스크 (watershed + 침식 합산, 시각화용)
     all_sep_boundaries = np.zeros_like(mask_lower)
@@ -430,7 +436,9 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image,
         """watershed / 침식 분리를 순서대로 적용하고 경계 누적"""
         nonlocal all_sep_boundaries
         if ws_phases.get(phase):
-            mask, b = _applyWatershed(mask, ws_ratio)
+            # Alpha-Al: 최소 씨앗 거리 적용 → 얇은 영역은 씨앗 없이 이웃에 흡수
+            seed_dist = al_min_seed if phase == 'alpha_al' else 0
+            mask, b = _applyWatershed(mask, ws_ratio, min_seed_dist=seed_dist)
             all_sep_boundaries = cv2.bitwise_or(all_sep_boundaries, b)
         if er_phases.get(phase):
             mask, b = _applyErosionSeparation(mask, er_radius)
@@ -514,10 +522,10 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image,
 
     # 6. 시각화 오버레이
     seg_map = np.zeros(normalized_image.shape, dtype=np.uint8)
+    seg_map[mask_alpha       > 0] = 4  # 얇은 파편도 포함 (ECD 통계만 제외, 시각화·분율은 포함)
     seg_map[final_pore_mask  > 0] = 1
     seg_map[final_si_mask    > 0] = 2
     seg_map[final_inter_mask > 0] = 3
-    seg_map[final_alpha_mask > 0] = 4
 
     color_map = np.zeros((*normalized_image.shape, 3), dtype=np.uint8)
     color_map[seg_map == 1] = [255, 0,   0  ]  # 기공       = 파랑 (BGR)

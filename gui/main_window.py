@@ -302,9 +302,9 @@ class MainWindow(QMainWindow):
 
         # 8행: Alpha-Al 최소 두께 (Watershed 슬라이버 제거)
         alw_w = QWidget(); alw_lay = QHBoxLayout(alw_w); alw_lay.setContentsMargins(0,0,0,0)
-        alw_lay.addWidget(QLabel("Al 최소 두께 (내접원 반지름):"))
+        alw_lay.addWidget(QLabel("Al Watershed 최소 씨앗 거리:"))
         alw_lay.addWidget(self.sp_al_min_width)
-        alw_lay.addWidget(QLabel("px  (Watershed 후 얇은 파편 제거, 0=끔)"))
+        alw_lay.addWidget(QLabel("px  (이보다 얇은 영역은 씨앗 없이 이웃 Al로 흡수, 0=끔)"))
         alw_lay.addStretch()
         p_lay.addWidget(alw_w,                       8, 0, 1, 4)
         p_lay.addWidget(self.chk_clahe,              9, 0, 1, 4)
