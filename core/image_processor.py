@@ -4,16 +4,12 @@ import math
 from config import settings
 
 
-def normalizeImage(gray_image):
+def normalizeImage(gray_image, blur_kernel=None):
     """
     CLAHE(선택)로 사진 간 조명/에칭 차이를 보정한 뒤 노이즈 제거.
     settings.USE_CLAHE = False 로 끄면 기존 방식(medianBlur만) 사용.
 
-    CLAHE(Contrast Limited Adaptive Histogram Equalization):
-    - 전체 히스토그램이 아닌 작은 타일 단위로 대비를 높여,
-      한 장 안에서 밝기가 불균일해도 어두운/밝은 영역 모두 균일하게 처리.
-    - 사진마다 전체 밝기가 달라도 임계값의 상대적 의미가 유지됨.
-    - 에칭 정도 차이로 인한 전체 밝기 이동(shift)에 어느 정도 강인해짐.
+    blur_kernel: medianBlur 커널 크기 (홀수). 클수록 작은 잔점/노이즈 제거.
     """
     if settings.USE_CLAHE:
         clahe = cv2.createCLAHE(
@@ -23,7 +19,10 @@ def normalizeImage(gray_image):
         img = clahe.apply(gray_image)
     else:
         img = gray_image
-    return cv2.medianBlur(img, 3)
+
+    k = blur_kernel if blur_kernel is not None else settings.MEDIAN_BLUR_KERNEL
+    k = k if k % 2 == 1 else k + 1  # 홀수 강제
+    return cv2.medianBlur(img, k)
 
 
 def analyzeFeatures(mask, min_area_filter, phase_label):
@@ -235,6 +234,51 @@ def _applyWatershed(mask, dist_ratio=0.4):
     return separated_mask, boundary_mask
 
 
+def _applyErosionSeparation(mask, radius):
+    """
+    침식(Erosion) 기반 입자 분리.
+
+    1. 마스크를 radius px 침식 → 좁은 목(neck)이 끊어짐
+    2. 끊어진 각 덩어리를 씨앗으로 사용
+    3. Watershed로 원래 마스크 크기까지 복원
+       → 두 씨앗 사이 경계가 분리선이 됨
+
+    Watershed와의 차이:
+      - Watershed: 거리 봉우리 개수로 나눔 → 길쭉한 입자도 잘릴 수 있음
+      - 침식 분리: 목(연결부) 너비로 나눔 → 길쭉해도 두꺼우면 안 잘림
+        (radius × 2 px 보다 좁은 연결부만 끊어짐)
+    """
+    if not np.any(mask):
+        return mask.copy(), np.zeros_like(mask)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    eroded = cv2.erode(mask, kernel)
+
+    if not np.any(eroded):
+        return mask.copy(), np.zeros_like(mask)
+
+    # 침식 후 연결 성분 → 각각 독립 씨앗
+    _, markers = cv2.connectedComponents(eroded)
+    markers = markers.astype(np.int32) + 1  # 배경=1, 각 성분=2+
+
+    # 침식으로 깎인 영역(unknown): 씨앗도 배경도 아닌 영역 → 0으로 표시
+    unknown = cv2.subtract(mask, eroded)
+    markers[unknown == 255] = 0
+    markers[mask == 0] = 1   # 마스크 밖 = 확실한 배경
+
+    # Watershed로 씨앗을 원래 마스크 크기까지 팽창 → 경계선 생성
+    img_3ch = cv2.merge([mask, mask, mask])
+    cv2.watershed(img_3ch, markers)
+
+    boundary_mask = np.zeros_like(mask)
+    boundary_mask[markers == -1] = 255
+
+    separated_mask = mask.copy()
+    separated_mask[markers == -1] = 0
+
+    return separated_mask, boundary_mask
+
+
 def segmentAndClassify(normalized_image, thresholds, params, original_image, scale_mask=None):
     total_pixels = normalized_image.size
 
@@ -286,15 +330,26 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image, sca
     # 5. 밝기 구간으로 직접 분리
     #    하단 구간 → Eutectic Si
     #    상단 구간 → Intermetallic
-    ws_phases = params.get('watershed_phases', settings.WATERSHED_PHASES)
-    ws_ratio  = params.get('watershed_dist_ratio', settings.WATERSHED_DIST_RATIO)
+    ws_phases  = params.get('watershed_phases',  settings.WATERSHED_PHASES)
+    ws_ratio   = params.get('watershed_dist_ratio', settings.WATERSHED_DIST_RATIO)
+    er_phases  = params.get('erosion_phases',    settings.EROSION_PHASES)
+    er_radius  = params.get('erosion_radius',    settings.EROSION_RADIUS)
 
-    # 상별 Watershed 경계 마스크 (시각화용)
-    ws_boundaries = {p: np.zeros_like(mask_lower) for p in ('si', 'intermetallic', 'alpha_al', 'pore')}
+    # 상별 경계 마스크 (watershed + 침식 합산, 시각화용)
+    all_sep_boundaries = np.zeros_like(mask_lower)
 
-    # Si watershed
-    if ws_phases.get('si'):
-        mask_lower, ws_boundaries['si'] = _applyWatershed(mask_lower, ws_ratio)
+    def _separate(mask, phase):
+        """watershed / 침식 분리를 순서대로 적용하고 경계 누적"""
+        nonlocal all_sep_boundaries
+        if ws_phases.get(phase):
+            mask, b = _applyWatershed(mask, ws_ratio)
+            all_sep_boundaries = cv2.bitwise_or(all_sep_boundaries, b)
+        if er_phases.get(phase):
+            mask, b = _applyErosionSeparation(mask, er_radius)
+            all_sep_boundaries = cv2.bitwise_or(all_sep_boundaries, b)
+        return mask
+
+    mask_lower = _separate(mask_lower, 'si')
 
     si_feats, final_si_mask = analyzeFeatures(mask_lower, params['si_rules']['min_area'], 'eutectic_si')
 
@@ -305,9 +360,18 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image, sca
         si_dilated = cv2.dilate(final_si_mask, kernel)
         mask_upper = cv2.bitwise_and(mask_upper, cv2.bitwise_not(si_dilated))
 
-    # IM watershed
-    if ws_phases.get('intermetallic'):
-        mask_upper, ws_boundaries['intermetallic'] = _applyWatershed(mask_upper, ws_ratio)
+    # Al 경계 근처 IM 후보 제거: Al-IM 그레이스케일 그래디언트가 IM 밝기 구간에 걸리는 현상 방지
+    # 원시 Alpha-Al 마스크(밝기 기준만)를 팽창 → 근접 IM 픽셀 제거
+    al_excl_r = params.get('al_exclusion_radius', settings.AL_EXCLUSION_RADIUS)
+    if al_excl_r > 0:
+        raw_alpha = cv2.inRange(normalized_image, thresholds['alpha_al'][0], 255)
+        if scale_mask is not None:
+            raw_alpha[scale_mask > 0] = 0
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * al_excl_r + 1, 2 * al_excl_r + 1))
+        al_dilated = cv2.dilate(raw_alpha, kernel)
+        mask_upper = cv2.bitwise_and(mask_upper, cv2.bitwise_not(al_dilated))
+
+    mask_upper = _separate(mask_upper, 'intermetallic')
 
     inter_feats, final_inter_mask = analyzeFeatures(mask_upper, params['min_areas']['intermetallic'], 'intermetallic')
 
@@ -330,13 +394,8 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image, sca
         inter_feats = kept
         mask_alpha = cv2.bitwise_or(mask_alpha, large_mask)
 
-    # 기공 watershed
-    if ws_phases.get('pore'):
-        mask_pore, ws_boundaries['pore'] = _applyWatershed(mask_pore, ws_ratio)
-
-    # Alpha-Al watershed
-    if ws_phases.get('alpha_al'):
-        mask_alpha, ws_boundaries['alpha_al'] = _applyWatershed(mask_alpha, ws_ratio)
+    mask_pore  = _separate(mask_pore,  'pore')
+    mask_alpha = _separate(mask_alpha, 'alpha_al')
 
     pore_feats,  final_pore_mask  = analyzeFeatures(mask_pore,  params['min_areas']['pore'],    'pore')
     alpha_feats, final_alpha_mask = analyzeFeatures(mask_alpha, params['min_areas']['alpha_al'], 'alpha_al')
@@ -375,23 +434,20 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image, sca
 
     result_image = cv2.addWeighted(color_map, 0.5, original_image, 0.5, 0)
 
-    # Watershed 경계선 흰색으로 오버레이 (어디가 나뉘었는지 직관적으로 확인)
-    if any(ws_phases.get(p) for p in ws_phases):
-        all_boundaries = ws_boundaries['si'].copy()
-        for b in ('intermetallic', 'alpha_al', 'pore'):
-            all_boundaries = cv2.bitwise_or(all_boundaries, ws_boundaries[b])
-        result_image[all_boundaries > 0] = [255, 255, 255]
+    # 분리 경계선 흰색으로 오버레이 (watershed + 침식 분리 모두 포함)
+    if np.any(all_sep_boundaries > 0):
+        result_image[all_sep_boundaries > 0] = [255, 255, 255]
 
     return result_image, data
 
 
-def loadGrayImage(image_path):
+def loadGrayImage(image_path, blur_kernel=None):
     """원본 이미지를 정규화된 그레이스케일로 반환 (GUI 호버용)"""
     img = cv2.imread(image_path)
     if img is None:
         return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return normalizeImage(gray)
+    return normalizeImage(gray, blur_kernel)
 
 
 def analyzeImage(image_path, thresholds, all_params):
@@ -399,7 +455,7 @@ def analyzeImage(image_path, thresholds, all_params):
     if original_image is None:
         return None, None
     gray = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
-    # 스케일 바는 CLAHE 전 원본 gray에서 감지 (밝기 값 그대로)
     scale_mask = detectScaleBarMask(gray)
-    norm = normalizeImage(gray)
+    blur_k = all_params.get('median_blur_kernel', settings.MEDIAN_BLUR_KERNEL)
+    norm = normalizeImage(gray, blur_k)
     return segmentAndClassify(norm, thresholds, all_params, original_image, scale_mask)

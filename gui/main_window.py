@@ -152,6 +152,12 @@ class MainWindow(QMainWindow):
         self.sp_ma_inter = QSpinBox(); self.sp_ma_inter.setRange(0, 100000); self.sp_ma_inter.setValue(settings.MAX_AREAS['intermetallic'])
         self.sp_ma_inter.setSpecialValueText("0 (끔)")
 
+        # 전처리 블러
+        self.sp_blur = QSpinBox()
+        self.sp_blur.setRange(1, 21)
+        self.sp_blur.setSingleStep(2)
+        self.sp_blur.setValue(settings.MEDIAN_BLUR_KERNEL)
+
         # 로컬 대비 파라미터
         self.sp_lc_kernel = QSpinBox()
         self.sp_lc_kernel.setRange(11, 301)
@@ -167,6 +173,12 @@ class MainWindow(QMainWindow):
         self.sp_si_excl.setRange(0, 30)
         self.sp_si_excl.setValue(settings.SI_EXCLUSION_RADIUS)
         self.sp_si_excl.setSpecialValueText("0 (끔)")
+
+        # Al 경계 제외 반경
+        self.sp_al_excl = QSpinBox()
+        self.sp_al_excl.setRange(0, 30)
+        self.sp_al_excl.setValue(settings.AL_EXCLUSION_RADIUS)
+        self.sp_al_excl.setSpecialValueText("0 (끔)")
 
         self.chk_clahe = QCheckBox("CLAHE 정규화 사용 (조명/에칭 차이 보정)")
         self.chk_clahe.setChecked(settings.USE_CLAHE)
@@ -191,9 +203,27 @@ class MainWindow(QMainWindow):
         self.sp_ws_ratio.setMinimumWidth(70)
         self.sp_ws_ratio.setStyleSheet("font-size: 14px; padding: 2px;")
 
+        # 침식 분리 (상별 개별 체크박스)
+        er = settings.EROSION_PHASES
+        self.chk_er_si   = QCheckBox("Si")
+        self.chk_er_im   = QCheckBox("IM")
+        self.chk_er_al   = QCheckBox("Al")
+        self.chk_er_pore = QCheckBox("기공")
+        self.chk_er_si.setChecked(er.get('si', False))
+        self.chk_er_im.setChecked(er.get('intermetallic', False))
+        self.chk_er_al.setChecked(er.get('alpha_al', False))
+        self.chk_er_pore.setChecked(er.get('pore', False))
+
+        self.sp_er_radius = QSpinBox()
+        self.sp_er_radius.setRange(1, 50)
+        self.sp_er_radius.setValue(settings.EROSION_RADIUS)
+        self.sp_er_radius.setMinimumWidth(70)
+        self.sp_er_radius.setStyleSheet("font-size: 14px; padding: 2px;")
+
         for sp in [self.sp_p_u, self.sp_si_l, self.sp_si_u, self.sp_im_l, self.sp_im_u,
                    self.sp_a_l, self.sp_a_pore, self.sp_a_si, self.sp_a_inter, self.sp_a_alpha,
-                   self.sp_lc_kernel, self.sp_lc_diff, self.sp_ma_inter, self.sp_si_excl]:
+                   self.sp_lc_kernel, self.sp_lc_diff, self.sp_ma_inter,
+                   self.sp_si_excl, self.sp_al_excl]:
             sp.setMinimumWidth(80)
             sp.setStyleSheet("font-size: 14px; padding: 2px;")
 
@@ -228,7 +258,15 @@ class MainWindow(QMainWindow):
         p_lay.addWidget(self.sp_a_l,                  4, 1)
         p_lay.addWidget(self.sp_a_alpha,              4, 2)
 
-        # 5행: 로컬 대비 필터
+        # 5행: 전처리 블러
+        blur_w = QWidget(); blur_lay = QHBoxLayout(blur_w); blur_lay.setContentsMargins(0,0,0,0)
+        blur_lay.addWidget(QLabel("전처리 블러 (Median):"))
+        blur_lay.addWidget(self.sp_blur)
+        blur_lay.addWidget(QLabel("px  (클수록 잔점/노이즈 제거, 홀수)"))
+        blur_lay.addStretch()
+        p_lay.addWidget(blur_w,                      5, 0, 1, 4)
+
+        # 6행: 로컬 대비 필터
         lc_grp_w = QWidget(); lc_lay = QHBoxLayout(lc_grp_w); lc_lay.setContentsMargins(0,0,0,0)
         lc_lay.addWidget(QLabel("로컬 대비 (Si/IM):"))
         lc_lay.addWidget(QLabel("커널:"))
@@ -237,18 +275,21 @@ class MainWindow(QMainWindow):
         lc_lay.addWidget(self.sp_lc_diff)
         lc_lay.addWidget(QLabel("(0=끔)"))
         lc_lay.addStretch()
-        p_lay.addWidget(lc_grp_w,                    5, 0, 1, 4)
+        p_lay.addWidget(lc_grp_w,                    6, 0, 1, 4)
 
-        # 6행: Si 경계 제외 반경
+        # 7행: 경계 제외 반경 (Si, Al)
         excl_w = QWidget(); excl_lay = QHBoxLayout(excl_w); excl_lay.setContentsMargins(0,0,0,0)
-        excl_lay.addWidget(QLabel("Si 경계 제외 반경:"))
+        excl_lay.addWidget(QLabel("경계 제외:"))
+        excl_lay.addWidget(QLabel("Si"))
         excl_lay.addWidget(self.sp_si_excl)
-        excl_lay.addWidget(QLabel("px  (Si-Al 그래디언트 → IM 오분류 방지, 0=끔)"))
+        excl_lay.addWidget(QLabel("px   Al"))
+        excl_lay.addWidget(self.sp_al_excl)
+        excl_lay.addWidget(QLabel("px   (경계 그래디언트 → IM 오분류 방지, 0=끔)"))
         excl_lay.addStretch()
-        p_lay.addWidget(excl_w,                      6, 0, 1, 4)
-        p_lay.addWidget(self.chk_clahe,              7, 0, 1, 4)
+        p_lay.addWidget(excl_w,                      7, 0, 1, 4)
+        p_lay.addWidget(self.chk_clahe,              8, 0, 1, 4)
 
-        # 8행: Watershed (상별 개별)
+        # 9행: Watershed (상별 개별)
         ws_w = QWidget(); ws_lay = QHBoxLayout(ws_w); ws_lay.setContentsMargins(0,0,0,0)
         ws_lay.addWidget(QLabel("Watershed:"))
         ws_lay.addWidget(self.chk_ws_si)
@@ -259,7 +300,27 @@ class MainWindow(QMainWindow):
         ws_lay.addWidget(self.sp_ws_ratio)
         ws_lay.addWidget(QLabel("(낮을수록 많이 나눔)"))
         ws_lay.addStretch()
-        p_lay.addWidget(ws_w,                        8, 0, 1, 4)
+        p_lay.addWidget(ws_w,                        9, 0, 1, 4)
+
+        # 10행: 침식 분리
+        er_w = QWidget(); er_lay = QHBoxLayout(er_w); er_lay.setContentsMargins(0,0,0,0)
+        er_lay.addWidget(QLabel("침식 분리:"))
+        er_lay.addWidget(self.chk_er_si)
+        er_lay.addWidget(self.chk_er_im)
+        er_lay.addWidget(self.chk_er_al)
+        er_lay.addWidget(self.chk_er_pore)
+        er_lay.addWidget(QLabel("  목 반경:"))
+        er_lay.addWidget(self.sp_er_radius)
+        er_lay.addWidget(QLabel("px  (반경×2 미만 목은 분리)"))
+        er_lay.addStretch()
+        p_lay.addWidget(er_w,                        10, 0, 1, 4)
+
+        # 글씨 크기 통일 (파라미터 패널 전체)
+        p_grp.setStyleSheet("""
+            QGroupBox { font-size: 14px; font-weight: bold; }
+            QLabel    { font-size: 13px; }
+            QCheckBox { font-size: 13px; }
+        """)
         layout.addWidget(p_grp)
 
         # --- 범례 ---
@@ -350,13 +411,22 @@ class MainWindow(QMainWindow):
         return thresh, {'min_areas': min_areas, 'si_rules': si_rules,
                         'local_contrast': local_contrast, 'max_areas': max_areas,
                         'si_exclusion_radius': self.sp_si_excl.value(),
+                        'al_exclusion_radius': self.sp_al_excl.value(),
                         'watershed_phases': {
                             'si':            self.chk_ws_si.isChecked(),
                             'intermetallic': self.chk_ws_im.isChecked(),
                             'alpha_al':      self.chk_ws_al.isChecked(),
                             'pore':          self.chk_ws_pore.isChecked(),
                         },
-                        'watershed_dist_ratio': self.sp_ws_ratio.value()}
+                        'watershed_dist_ratio': self.sp_ws_ratio.value(),
+                        'erosion_phases': {
+                            'si':            self.chk_er_si.isChecked(),
+                            'intermetallic': self.chk_er_im.isChecked(),
+                            'alpha_al':      self.chk_er_al.isChecked(),
+                            'pore':          self.chk_er_pore.isChecked(),
+                        },
+                        'erosion_radius': self.sp_er_radius.value(),
+                        'median_blur_kernel': self.sp_blur.value()}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")
