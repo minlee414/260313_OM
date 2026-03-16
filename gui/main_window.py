@@ -180,13 +180,22 @@ class MainWindow(QMainWindow):
         self.sp_al_excl.setValue(settings.AL_EXCLUSION_RADIUS)
         self.sp_al_excl.setSpecialValueText("0 (끔)")
 
-        # Alpha-Al 최소 두께 (내접원 반지름): Watershed 슬라이버 파편 제거
+        # Alpha-Al Watershed 최소 씨앗 거리
         self.sp_al_min_width = QSpinBox()
         self.sp_al_min_width.setRange(0, 50)
         self.sp_al_min_width.setValue(settings.AL_MIN_WIDTH_PX)
         self.sp_al_min_width.setSpecialValueText("0 (끔)")
         self.sp_al_min_width.setMinimumWidth(80)
         self.sp_al_min_width.setStyleSheet("font-size: 14px; padding: 2px;")
+
+        # Alpha-Al Watershed 거리 변환 스무딩
+        self.sp_al_ws_smooth = QSpinBox()
+        self.sp_al_ws_smooth.setRange(0, 100)
+        self.sp_al_ws_smooth.setSingleStep(5)
+        self.sp_al_ws_smooth.setValue(settings.AL_WS_SMOOTH)
+        self.sp_al_ws_smooth.setSpecialValueText("0 (끔)")
+        self.sp_al_ws_smooth.setMinimumWidth(80)
+        self.sp_al_ws_smooth.setStyleSheet("font-size: 14px; padding: 2px;")
 
         self.chk_clahe = QCheckBox("CLAHE 정규화 사용 (조명/에칭 차이 보정)")
         self.chk_clahe.setChecked(settings.USE_CLAHE)
@@ -302,9 +311,11 @@ class MainWindow(QMainWindow):
 
         # 8행: Alpha-Al 최소 두께 (Watershed 슬라이버 제거)
         alw_w = QWidget(); alw_lay = QHBoxLayout(alw_w); alw_lay.setContentsMargins(0,0,0,0)
-        alw_lay.addWidget(QLabel("Al Watershed 최소 씨앗 거리:"))
+        alw_lay.addWidget(QLabel("Al Watershed —  씨앗 스무딩:"))
+        alw_lay.addWidget(self.sp_al_ws_smooth)
+        alw_lay.addWidget(QLabel("px  최소 씨앗 거리:"))
         alw_lay.addWidget(self.sp_al_min_width)
-        alw_lay.addWidget(QLabel("px  (이보다 얇은 영역은 씨앗 없이 이웃 Al로 흡수, 0=끔)"))
+        alw_lay.addWidget(QLabel("px  (스무딩↑ → 큰 덩어리만 분리, 0=끔)"))
         alw_lay.addStretch()
         p_lay.addWidget(alw_w,                       8, 0, 1, 4)
         p_lay.addWidget(self.chk_clahe,              9, 0, 1, 4)
@@ -455,7 +466,8 @@ class MainWindow(QMainWindow):
                         'erosion_radius': self.sp_er_radius.value(),
                         'median_blur_kernel': self.sp_blur.value(),
                         'use_gmm': self.chk_gmm.isChecked(),
-                        'al_min_width_px': self.sp_al_min_width.value()}
+                        'al_min_width_px': self.sp_al_min_width.value(),
+                        'al_ws_smooth': self.sp_al_ws_smooth.value()}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")
