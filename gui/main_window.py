@@ -11,6 +11,8 @@ from config import settings
 class ZoomableViewer(QGraphicsView):
     # 마우스가 이미지 위를 움직일 때 (x, y, gray_value) 전달
     pixelHovered = pyqtSignal(int, int, int)
+    # 뷰 변경(줌·패닝) 시 transform + 스크롤 위치 동기화용
+    viewSynced = pyqtSignal(object, int, int)   # (QTransform, hval, vval)
 
     def __init__(self):
         super().__init__()
@@ -26,16 +28,38 @@ class ZoomableViewer(QGraphicsView):
         self.zoom_factor = 1.15
         self.setMouseTracking(True)
 
-        self._gray_image = None  # 호버용 그레이스케일 numpy 배열
+        self._gray_image = None
+        self._syncing = False
+
+        # 패닝(드래그)으로 스크롤 바 값이 바뀔 때도 동기화
+        self.horizontalScrollBar().valueChanged.connect(self._onScrollChanged)
+        self.verticalScrollBar().valueChanged.connect(self._onScrollChanged)
 
     def setGrayImage(self, gray_np):
-        """호버 시 밝기 값 조회용 그레이스케일 배열 설정"""
         self._gray_image = gray_np
 
     def setPixmap(self, pixmap):
         self.pixmap_item.setPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
         self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def _onScrollChanged(self):
+        if not self._syncing:
+            self.viewSynced.emit(
+                self.transform(),
+                self.horizontalScrollBar().value(),
+                self.verticalScrollBar().value(),
+            )
+
+    def applySync(self, transform, hval, vval):
+        """반대쪽 뷰어에서 받은 transform + 스크롤 위치를 그대로 적용"""
+        if self._syncing:
+            return
+        self._syncing = True
+        self.setTransform(transform)
+        self.horizontalScrollBar().setValue(hval)
+        self.verticalScrollBar().setValue(vval)
+        self._syncing = False
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
@@ -52,6 +76,7 @@ class ZoomableViewer(QGraphicsView):
         zoom = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.scale(zoom, zoom)
+        # wheelEvent 후 스크롤 바도 같이 바뀌므로 _onScrollChanged 에서 자동 emit
 
 
 class BatchWorker(QThread):
@@ -137,13 +162,19 @@ class MainWindow(QMainWindow):
         self.sp_lc_diff.setRange(0, 100)
         self.sp_lc_diff.setValue(settings.LOCAL_CONTRAST['min_diff'])
 
+        # Si 경계 제외 반경
+        self.sp_si_excl = QSpinBox()
+        self.sp_si_excl.setRange(0, 30)
+        self.sp_si_excl.setValue(settings.SI_EXCLUSION_RADIUS)
+        self.sp_si_excl.setSpecialValueText("0 (끔)")
+
         self.chk_clahe = QCheckBox("CLAHE 정규화 사용 (조명/에칭 차이 보정)")
         self.chk_clahe.setChecked(settings.USE_CLAHE)
         self.chk_clahe.stateChanged.connect(self._onClaheToggle)
 
         for sp in [self.sp_p_u, self.sp_si_l, self.sp_si_u, self.sp_im_l, self.sp_im_u,
                    self.sp_a_l, self.sp_a_pore, self.sp_a_si, self.sp_a_inter, self.sp_a_alpha,
-                   self.sp_lc_kernel, self.sp_lc_diff, self.sp_ma_inter]:
+                   self.sp_lc_kernel, self.sp_lc_diff, self.sp_ma_inter, self.sp_si_excl]:
             sp.setMinimumWidth(80)
             sp.setStyleSheet("font-size: 14px; padding: 2px;")
 
@@ -188,7 +219,15 @@ class MainWindow(QMainWindow):
         lc_lay.addWidget(QLabel("(0=끔)"))
         lc_lay.addStretch()
         p_lay.addWidget(lc_grp_w,                    5, 0, 1, 4)
-        p_lay.addWidget(self.chk_clahe,              6, 0, 1, 4)
+
+        # 6행: Si 경계 제외 반경
+        excl_w = QWidget(); excl_lay = QHBoxLayout(excl_w); excl_lay.setContentsMargins(0,0,0,0)
+        excl_lay.addWidget(QLabel("Si 경계 제외 반경:"))
+        excl_lay.addWidget(self.sp_si_excl)
+        excl_lay.addWidget(QLabel("px  (Si-Al 그래디언트 → IM 오분류 방지, 0=끔)"))
+        excl_lay.addStretch()
+        p_lay.addWidget(excl_w,                      6, 0, 1, 4)
+        p_lay.addWidget(self.chk_clahe,              7, 0, 1, 4)
         layout.addWidget(p_grp)
 
         # --- 범례 ---
@@ -245,6 +284,10 @@ class MainWindow(QMainWindow):
         self.file_selector.currentIndexChanged.connect(self.updateImage)
         self.viewer_orig.pixelHovered.connect(self._onPixelHovered)
 
+        # 원본 ↔ 결과 뷰어 줌·패닝 동기화 (같은 위치를 같이 봄)
+        self.viewer_orig.viewSynced.connect(self.viewer_result.applySync)
+        self.viewer_result.viewSynced.connect(self.viewer_orig.applySync)
+
     # ------------------------------------------------------------------
     def _onClaheToggle(self, state):
         settings.USE_CLAHE = bool(state)
@@ -262,9 +305,7 @@ class MainWindow(QMainWindow):
             'intermetallic': self.sp_a_inter.value(),
         }
         si_rules = {
-            'min_area':        self.sp_a_si.value(),
-            'max_circularity': self.sp_si_circ.value(),
-            'min_aspect_ratio': self.sp_si_ar.value(),
+            'min_area': self.sp_a_si.value(),
         }
         k = self.sp_lc_kernel.value()
         local_contrast = {
@@ -275,7 +316,8 @@ class MainWindow(QMainWindow):
             'intermetallic': self.sp_ma_inter.value(),
         }
         return thresh, {'min_areas': min_areas, 'si_rules': si_rules,
-                        'local_contrast': local_contrast, 'max_areas': max_areas}
+                        'local_contrast': local_contrast, 'max_areas': max_areas,
+                        'si_exclusion_radius': self.sp_si_excl.value()}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")

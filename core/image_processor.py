@@ -230,7 +230,16 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image, sca
     # 5. 밝기 구간으로 직접 분리
     #    하단 구간 → Eutectic Si
     #    상단 구간 → Intermetallic
-    si_feats,    final_si_mask    = analyzeFeatures(mask_lower, params['si_rules']['min_area'],     'eutectic_si')
+    si_feats, final_si_mask = analyzeFeatures(mask_lower, params['si_rules']['min_area'], 'eutectic_si')
+
+    # Si 경계 근처 IM 후보 제거: Si-Al 그레이스케일 그래디언트가 IM 밝기 구간에 걸리는 현상 방지
+    # Si 최종 마스크를 반경만큼 팽창 → 근접 IM 픽셀을 mask_upper에서 제거
+    excl_r = params.get('si_exclusion_radius', settings.SI_EXCLUSION_RADIUS)
+    if excl_r > 0 and np.any(final_si_mask > 0):
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * excl_r + 1, 2 * excl_r + 1))
+        si_dilated = cv2.dilate(final_si_mask, kernel)
+        mask_upper = cv2.bitwise_and(mask_upper, cv2.bitwise_not(si_dilated))
+
     inter_feats, final_inter_mask = analyzeFeatures(mask_upper, params['min_areas']['intermetallic'], 'intermetallic')
 
     # IM 최대 면적 필터: 너무 큰 덩어리 → Al 덴드라이트로 판단, Alpha-Al 재분류
