@@ -42,6 +42,17 @@ MAX_AREAS = {
 # Si 최종 마스크를 이 반경만큼 팽창시켜 근접 IM 픽셀을 Alpha-Al로 재분류. 0 = 끔
 SI_EXCLUSION_RADIUS = 3
 
+# Watershed 입자 분리: 서로 붙어있는 입자를 경계선으로 나눔 (상별 개별 설정)
+# DIST_RATIO: 거리 변환 최댓값 대비 전경 마커 임계 비율 (0.1~0.9)
+#   낮을수록 더 많이 나눔(과분할 위험), 높을수록 덜 나눔(분리 부족 위험)
+WATERSHED_PHASES = {
+    'si':            False,
+    'intermetallic': False,
+    'alpha_al':      False,
+    'pore':          False,
+}
+WATERSHED_DIST_RATIO = 0.4
+
 # CLAHE 파라미터: 사진 간 조명/에칭 차이 보정용 (False로 끄면 기존 방식)
 USE_CLAHE = True
 CLAHE_CLIP_LIMIT = 2.0

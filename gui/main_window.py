@@ -172,6 +172,25 @@ class MainWindow(QMainWindow):
         self.chk_clahe.setChecked(settings.USE_CLAHE)
         self.chk_clahe.stateChanged.connect(self._onClaheToggle)
 
+        # Watershed 입자 분리 (상별 개별 체크박스)
+        ws = settings.WATERSHED_PHASES
+        self.chk_ws_si    = QCheckBox("Si")
+        self.chk_ws_im    = QCheckBox("IM")
+        self.chk_ws_al    = QCheckBox("Al")
+        self.chk_ws_pore  = QCheckBox("기공")
+        self.chk_ws_si.setChecked(ws.get('si', False))
+        self.chk_ws_im.setChecked(ws.get('intermetallic', False))
+        self.chk_ws_al.setChecked(ws.get('alpha_al', False))
+        self.chk_ws_pore.setChecked(ws.get('pore', False))
+
+        self.sp_ws_ratio = QDoubleSpinBox()
+        self.sp_ws_ratio.setRange(0.01, 0.9)
+        self.sp_ws_ratio.setSingleStep(0.05)
+        self.sp_ws_ratio.setDecimals(2)
+        self.sp_ws_ratio.setValue(settings.WATERSHED_DIST_RATIO)
+        self.sp_ws_ratio.setMinimumWidth(70)
+        self.sp_ws_ratio.setStyleSheet("font-size: 14px; padding: 2px;")
+
         for sp in [self.sp_p_u, self.sp_si_l, self.sp_si_u, self.sp_im_l, self.sp_im_u,
                    self.sp_a_l, self.sp_a_pore, self.sp_a_si, self.sp_a_inter, self.sp_a_alpha,
                    self.sp_lc_kernel, self.sp_lc_diff, self.sp_ma_inter, self.sp_si_excl]:
@@ -228,6 +247,19 @@ class MainWindow(QMainWindow):
         excl_lay.addStretch()
         p_lay.addWidget(excl_w,                      6, 0, 1, 4)
         p_lay.addWidget(self.chk_clahe,              7, 0, 1, 4)
+
+        # 8행: Watershed (상별 개별)
+        ws_w = QWidget(); ws_lay = QHBoxLayout(ws_w); ws_lay.setContentsMargins(0,0,0,0)
+        ws_lay.addWidget(QLabel("Watershed:"))
+        ws_lay.addWidget(self.chk_ws_si)
+        ws_lay.addWidget(self.chk_ws_im)
+        ws_lay.addWidget(self.chk_ws_al)
+        ws_lay.addWidget(self.chk_ws_pore)
+        ws_lay.addWidget(QLabel("  민감도:"))
+        ws_lay.addWidget(self.sp_ws_ratio)
+        ws_lay.addWidget(QLabel("(낮을수록 많이 나눔)"))
+        ws_lay.addStretch()
+        p_lay.addWidget(ws_w,                        8, 0, 1, 4)
         layout.addWidget(p_grp)
 
         # --- 범례 ---
@@ -317,7 +349,14 @@ class MainWindow(QMainWindow):
         }
         return thresh, {'min_areas': min_areas, 'si_rules': si_rules,
                         'local_contrast': local_contrast, 'max_areas': max_areas,
-                        'si_exclusion_radius': self.sp_si_excl.value()}
+                        'si_exclusion_radius': self.sp_si_excl.value(),
+                        'watershed_phases': {
+                            'si':            self.chk_ws_si.isChecked(),
+                            'intermetallic': self.chk_ws_im.isChecked(),
+                            'alpha_al':      self.chk_ws_al.isChecked(),
+                            'pore':          self.chk_ws_pore.isChecked(),
+                        },
+                        'watershed_dist_ratio': self.sp_ws_ratio.value()}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")
