@@ -5,6 +5,9 @@ __pycache__/
 images/
 analysis_outputs/
 
+# Database (runtime artifact)
+*.db
+
 # OS files
 .DS_Store
 Thumbs.db
