@@ -26,6 +26,20 @@ SI_RULES = {
 
 MICRON_PER_PIXEL = 0.14  # μm/pixel (Axioskop 2 Mat, Axiocam 820)
 
+# 로컬 대비 필터: Si/IM이 주변 알파-Al보다 얼마나 어두운지 조건
+# kernel_size: 주변 평균을 구하는 영역 크기(px, 홀수), 클수록 넓은 범위와 비교
+# min_diff: 주변 평균보다 이 값 이상 어두워야 Si/IM으로 인정
+LOCAL_CONTRAST = {
+    'kernel_size': 51,
+    'min_diff': 15,
+}
+
+# IM 최대 면적: 이보다 큰 2차 상 후보 → Al 덴드라이트 내부로 판단하여 Alpha-Al 재분류
+# 0 = 끔 (제한 없음)
+MAX_AREAS = {
+    'intermetallic': 0,  # 0 = 끔. 필요시 큰 값(예: 50000)으로 설정
+}
+
 # CLAHE 파라미터: 사진 간 조명/에칭 차이 보정용 (False로 끄면 기존 방식)
 USE_CLAHE = True
 CLAHE_CLIP_LIMIT = 2.0

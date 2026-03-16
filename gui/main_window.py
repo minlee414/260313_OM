@@ -3,12 +3,15 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtGui import QPixmap, QImage, QPainter
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-from core.image_processor import analyzeImage
+from core.image_processor import analyzeImage, loadGrayImage
 from core.data_handler import saveData, getEcdStats
 from config import settings
 
 
 class ZoomableViewer(QGraphicsView):
+    # 마우스가 이미지 위를 움직일 때 (x, y, gray_value) 전달
+    pixelHovered = pyqtSignal(int, int, int)
+
     def __init__(self):
         super().__init__()
         self.scene = QGraphicsScene(self)
@@ -21,11 +24,29 @@ class ZoomableViewer(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.zoom_factor = 1.15
+        self.setMouseTracking(True)
+
+        self._gray_image = None  # 호버용 그레이스케일 numpy 배열
+
+    def setGrayImage(self, gray_np):
+        """호버 시 밝기 값 조회용 그레이스케일 배열 설정"""
+        self._gray_image = gray_np
 
     def setPixmap(self, pixmap):
         self.pixmap_item.setPixmap(pixmap)
         self.scene.setSceneRect(self.pixmap_item.boundingRect())
         self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        if self._gray_image is None:
+            return
+        scene_pos = self.mapToScene(event.pos())
+        x, y = int(scene_pos.x()), int(scene_pos.y())
+        h, w = self._gray_image.shape[:2]
+        if 0 <= x < w and 0 <= y < h:
+            val = int(self._gray_image[y, x])
+            self.pixelHovered.emit(x, y, val)
 
     def wheelEvent(self, event):
         zoom = self.zoom_factor if event.angleDelta().y() > 0 else 1 / self.zoom_factor
@@ -99,54 +120,75 @@ class MainWindow(QMainWindow):
         self.sp_im_u  = QSpinBox();  self.sp_im_u.setRange(0, 255);  self.sp_im_u.setValue(self.thresh['intermetallic'][1])
         self.sp_a_l   = QSpinBox();  self.sp_a_l.setRange(0, 255);   self.sp_a_l.setValue(self.thresh['alpha_al'][0])
 
-        self.sp_a_pore  = QSpinBox(); self.sp_a_pore.setRange(0, 10000);  self.sp_a_pore.setValue(self.min_areas['pore'])
-        self.sp_a_si    = QSpinBox(); self.sp_a_si.setRange(0, 10000);    self.sp_a_si.setValue(self.si_rules['min_area'])
-        self.sp_a_inter = QSpinBox(); self.sp_a_inter.setRange(0, 10000); self.sp_a_inter.setValue(self.min_areas['intermetallic'])
-        self.sp_a_alpha = QSpinBox(); self.sp_a_alpha.setRange(0, 10000); self.sp_a_alpha.setValue(self.min_areas['alpha_al'])
+        self.sp_a_pore   = QSpinBox(); self.sp_a_pore.setRange(0, 10000);   self.sp_a_pore.setValue(self.min_areas['pore'])
+        self.sp_a_si     = QSpinBox(); self.sp_a_si.setRange(0, 10000);     self.sp_a_si.setValue(self.si_rules['min_area'])
+        self.sp_a_inter  = QSpinBox(); self.sp_a_inter.setRange(0, 10000);  self.sp_a_inter.setValue(self.min_areas['intermetallic'])
+        self.sp_a_alpha  = QSpinBox(); self.sp_a_alpha.setRange(0, 10000);  self.sp_a_alpha.setValue(self.min_areas['alpha_al'])
+        self.sp_ma_inter = QSpinBox(); self.sp_ma_inter.setRange(0, 100000); self.sp_ma_inter.setValue(settings.MAX_AREAS['intermetallic'])
+        self.sp_ma_inter.setSpecialValueText("0 (끔)")
 
-        self.sp_si_circ = QDoubleSpinBox(); self.sp_si_circ.setRange(0, 1.0);  self.sp_si_circ.setSingleStep(0.05); self.sp_si_circ.setValue(self.si_rules['max_circularity'])
-        self.sp_si_ar   = QDoubleSpinBox(); self.sp_si_ar.setRange(1.0, 50.0); self.sp_si_ar.setSingleStep(0.5);   self.sp_si_ar.setValue(self.si_rules['min_aspect_ratio'])
+        # 로컬 대비 파라미터
+        self.sp_lc_kernel = QSpinBox()
+        self.sp_lc_kernel.setRange(11, 301)
+        self.sp_lc_kernel.setSingleStep(10)
+        self.sp_lc_kernel.setValue(settings.LOCAL_CONTRAST['kernel_size'])
 
-        # CLAHE 토글
+        self.sp_lc_diff = QSpinBox()
+        self.sp_lc_diff.setRange(0, 100)
+        self.sp_lc_diff.setValue(settings.LOCAL_CONTRAST['min_diff'])
+
         self.chk_clahe = QCheckBox("CLAHE 정규화 사용 (조명/에칭 차이 보정)")
         self.chk_clahe.setChecked(settings.USE_CLAHE)
         self.chk_clahe.stateChanged.connect(self._onClaheToggle)
 
         for sp in [self.sp_p_u, self.sp_si_l, self.sp_si_u, self.sp_im_l, self.sp_im_u,
                    self.sp_a_l, self.sp_a_pore, self.sp_a_si, self.sp_a_inter, self.sp_a_alpha,
-                   self.sp_si_circ, self.sp_si_ar]:
+                   self.sp_lc_kernel, self.sp_lc_diff, self.sp_ma_inter]:
             sp.setMinimumWidth(80)
             sp.setStyleSheet("font-size: 14px; padding: 2px;")
 
-        headers = ["상(Phase)", "밝기 범위", "최소 면적(px)", "Si 형상 규칙"]
+        headers = ["상(Phase)", "밝기 범위", "면적 필터(px)"]
         for col, h in enumerate(headers):
             p_lay.addWidget(QLabel(f"<b>{h}</b>"), 0, col, Qt.AlignCenter)
 
-        p_lay.addWidget(QLabel("기공 (Pore)"),       1, 0)
-        p_lay.addWidget(self.sp_p_u,                 1, 1)
-        p_lay.addWidget(self.sp_a_pore,              1, 2)
+        # 1행: 기공
+        p_lay.addWidget(QLabel("기공 (Pore)"),        1, 0)
+        p_lay.addWidget(self.sp_p_u,                  1, 1)
+        p_lay.addWidget(self.sp_a_pore,               1, 2)
 
-        p_lay.addWidget(QLabel("Eutectic Si"),       2, 0)
+        # 2행: Eutectic Si  (밝기 하단 구간 → 직접 Si)
+        p_lay.addWidget(QLabel("Eutectic Si"),         2, 0)
         w_si = QWidget(); si_lay = QHBoxLayout(w_si); si_lay.setContentsMargins(0,0,0,0)
         si_lay.addWidget(self.sp_si_l); si_lay.addWidget(QLabel("~")); si_lay.addWidget(self.sp_si_u)
-        p_lay.addWidget(w_si,                        2, 1)
-        p_lay.addWidget(self.sp_a_si,                2, 2)
-        w_rule = QWidget(); rule_lay = QVBoxLayout(w_rule); rule_lay.setContentsMargins(0,0,0,0)
-        rule_lay.addWidget(QLabel("최대 원형도:")); rule_lay.addWidget(self.sp_si_circ)
-        rule_lay.addWidget(QLabel("최소 종횡비:")); rule_lay.addWidget(self.sp_si_ar)
-        p_lay.addWidget(w_rule,                      2, 3)
+        p_lay.addWidget(w_si,                         2, 1)
+        p_lay.addWidget(self.sp_a_si,                 2, 2)
 
-        p_lay.addWidget(QLabel("Intermetallics"),    3, 0)
+        # 3행: Intermetallics  (밝기 상단 구간 → 직접 IM)
+        p_lay.addWidget(QLabel("Intermetallics"),      3, 0)
         w_im = QWidget(); im_lay = QHBoxLayout(w_im); im_lay.setContentsMargins(0,0,0,0)
         im_lay.addWidget(self.sp_im_l); im_lay.addWidget(QLabel("~")); im_lay.addWidget(self.sp_im_u)
-        p_lay.addWidget(w_im,                        3, 1)
-        p_lay.addWidget(self.sp_a_inter,             3, 2)
+        p_lay.addWidget(w_im,                         3, 1)
+        w_im_area = QWidget(); im_area_lay = QHBoxLayout(w_im_area); im_area_lay.setContentsMargins(0,0,0,0)
+        im_area_lay.addWidget(QLabel("최소:")); im_area_lay.addWidget(self.sp_a_inter)
+        im_area_lay.addWidget(QLabel("  최대:")); im_area_lay.addWidget(self.sp_ma_inter)
+        p_lay.addWidget(w_im_area,                    3, 2)
 
-        p_lay.addWidget(QLabel("Alpha-Al 매트릭스"), 4, 0)
-        p_lay.addWidget(self.sp_a_l,                 4, 1)
-        p_lay.addWidget(self.sp_a_alpha,             4, 2)
+        # 4행: Alpha-Al
+        p_lay.addWidget(QLabel("Alpha-Al 매트릭스"),   4, 0)
+        p_lay.addWidget(self.sp_a_l,                  4, 1)
+        p_lay.addWidget(self.sp_a_alpha,              4, 2)
 
-        p_lay.addWidget(self.chk_clahe,              5, 0, 1, 4)
+        # 5행: 로컬 대비 필터
+        lc_grp_w = QWidget(); lc_lay = QHBoxLayout(lc_grp_w); lc_lay.setContentsMargins(0,0,0,0)
+        lc_lay.addWidget(QLabel("로컬 대비 (Si/IM):"))
+        lc_lay.addWidget(QLabel("커널:"))
+        lc_lay.addWidget(self.sp_lc_kernel)
+        lc_lay.addWidget(QLabel("px   최소 차이:"))
+        lc_lay.addWidget(self.sp_lc_diff)
+        lc_lay.addWidget(QLabel("(0=끔)"))
+        lc_lay.addStretch()
+        p_lay.addWidget(lc_grp_w,                    5, 0, 1, 4)
+        p_lay.addWidget(self.chk_clahe,              6, 0, 1, 4)
         layout.addWidget(p_grp)
 
         # --- 범례 ---
@@ -181,10 +223,18 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Vertical)
         self.viewer_orig   = ZoomableViewer()
         self.viewer_result = ZoomableViewer()
+
         grp_orig = QGroupBox("원본 이미지 (휠: 줌, 드래그: 이동)")
-        QVBoxLayout(grp_orig).addWidget(self.viewer_orig)
+        orig_layout = QVBoxLayout(grp_orig)
+        orig_layout.addWidget(self.viewer_orig)
+        # 호버 시 밝기 값 표시 레이블
+        self.lbl_hover = QLabel("커서를 원본 이미지 위에 올리면 밝기 값이 표시됩니다.")
+        self.lbl_hover.setStyleSheet("font-size: 13px; color: #333; padding: 2px;")
+        orig_layout.addWidget(self.lbl_hover)
+
         grp_res = QGroupBox("분석 결과 이미지 (휠: 줌, 드래그: 이동)")
         QVBoxLayout(grp_res).addWidget(self.viewer_result)
+
         splitter.addWidget(grp_orig)
         splitter.addWidget(grp_res)
         main_layout.addWidget(splitter, 1)
@@ -193,6 +243,7 @@ class MainWindow(QMainWindow):
         self.btn_run.clicked.connect(self.runAnalysis)
         self.btn_batch.clicked.connect(self.runBatch)
         self.file_selector.currentIndexChanged.connect(self.updateImage)
+        self.viewer_orig.pixelHovered.connect(self._onPixelHovered)
 
     # ------------------------------------------------------------------
     def _onClaheToggle(self, state):
@@ -215,7 +266,16 @@ class MainWindow(QMainWindow):
             'max_circularity': self.sp_si_circ.value(),
             'min_aspect_ratio': self.sp_si_ar.value(),
         }
-        return thresh, {'min_areas': min_areas, 'si_rules': si_rules}
+        k = self.sp_lc_kernel.value()
+        local_contrast = {
+            'kernel_size': k if k % 2 == 1 else k + 1,
+            'min_diff':    self.sp_lc_diff.value(),
+        }
+        max_areas = {
+            'intermetallic': self.sp_ma_inter.value(),
+        }
+        return thresh, {'min_areas': min_areas, 'si_rules': si_rules,
+                        'local_contrast': local_contrast, 'max_areas': max_areas}
 
     def loadFolder(self):
         folder = QFileDialog.getExistingDirectory(self, "폴더 선택")
@@ -231,10 +291,32 @@ class MainWindow(QMainWindow):
         for f in self.image_files:
             self.file_selector.addItem(os.path.basename(f))
 
+    def _onPixelHovered(self, x, y, val):
+        phase = self._grayValueToPhase(val)
+        self.lbl_hover.setText(
+            f"  위치: ({x}, {y})   밝기(gray): {val}   "
+            f"→ 현재 파라미터 기준 추정 상: {phase}"
+        )
+
+    def _grayValueToPhase(self, val):
+        """현재 GUI 임계값 기준으로 픽셀 밝기가 어느 상에 해당하는지 추정"""
+        if val <= self.sp_p_u.value():
+            return "기공 (Pore)"
+        if self.sp_si_l.value() <= val <= self.sp_si_u.value():
+            return "Eutectic Si"
+        if self.sp_im_l.value() <= val <= self.sp_im_u.value():
+            return "Intermetallics"
+        if val >= self.sp_a_l.value():
+            return "Alpha-Al"
+        return "미분류"
+
     def updateImage(self, idx):
         if 0 < idx <= len(self.image_files):
             self.current_image_path = self.image_files[idx - 1]
             self.displayImage(self.viewer_orig, self.current_image_path)
+            # 호버용 그레이스케일 이미지 로드 및 뷰어에 전달
+            gray = loadGrayImage(self.current_image_path)
+            self.viewer_orig.setGrayImage(gray)
             self._clearResultViewer()
 
     def _clearResultViewer(self):

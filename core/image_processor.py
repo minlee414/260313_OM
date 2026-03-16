@@ -90,6 +90,8 @@ def analyzeFeatures(mask, min_area_filter, phase_label):
 def filterSiByShape(si_candidate_mask, si_rules):
     """
     형상 필터(원형도/종횡비)로 Si 후보 마스크에서 최종 Si만 추출.
+    윤곽점이 5개 미만인 작은 입자는 종횡비 측정 불가 → Si로 분류
+    (측정 불가 입자를 IM으로 쌓이게 하지 않음)
     """
     final_si_mask = np.zeros_like(si_candidate_mask)
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(si_candidate_mask, connectivity=8)
@@ -115,7 +117,8 @@ def filterSiByShape(si_candidate_mask, si_rules):
             (rw, rh) = rect[1]
             aspect_ratio = max(rw, rh) / min(rw, rh) if min(rw, rh) > 0 else 1
         else:
-            aspect_ratio = 1.0
+            # 윤곽점 부족 → 종횡비 측정 불가: Si 기준값으로 설정해 Si로 분류
+            aspect_ratio = si_rules['min_aspect_ratio']
 
         if (area_px >= si_rules['min_area'] and
                 circularity <= si_rules['max_circularity'] and
@@ -127,39 +130,131 @@ def filterSiByShape(si_candidate_mask, si_rules):
     return final_si_mask
 
 
-def segmentAndClassify(normalized_image, thresholds, params, original_image):
+def _locallyDarkMask(gray_image, kernel_size, min_diff):
+    """
+    주변 평균보다 min_diff 이상 어두운 픽셀만 남기는 마스크.
+    Si/IM처럼 알파-Al 매트릭스 안에 있는 어두운 입자를 검출하는 데 사용.
+
+    kernel_size: 주변 평균을 구할 영역 크기(홀수 강제). 클수록 넓은 범위와 비교.
+    min_diff:    픽셀이 주변보다 이 값 이상 어두워야 마스크에 포함.
+    """
+    k = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+    local_mean = cv2.GaussianBlur(gray_image.astype(np.float32), (k, k), 0)
+    diff = local_mean - gray_image.astype(np.float32)  # 양수 = 주변보다 어두움
+    return (diff >= min_diff).astype(np.uint8) * 255
+
+
+def detectScaleBarMask(gray_image):
+    """
+    이미지 하단의 흰색 스케일 바 박스를 자동 감지하여 마스크 반환.
+    감지된 영역은 분석에서 제외됨.
+    CLAHE 전 원본 gray 이미지에서 실행해야 신뢰도 높음.
+    """
+    h, w = gray_image.shape
+    search_top = int(h * 0.7)
+    roi = gray_image[search_top:, :]
+
+    # 매우 밝은 픽셀(흰색 박스 배경) 추출
+    _, bright = cv2.threshold(roi, 245, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, kernel)
+
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(bright, connectivity=8)
+    scale_mask = np.zeros((h, w), dtype=np.uint8)
+
+    for i in range(1, num_labels):
+        bx = stats[i, cv2.CC_STAT_LEFT]
+        by = stats[i, cv2.CC_STAT_TOP]
+        bw = stats[i, cv2.CC_STAT_WIDTH]
+        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        area = stats[i, cv2.CC_STAT_AREA]
+        if bh == 0:
+            continue
+        aspect = bw / bh
+        fill   = area / (bw * bh)
+        # 스케일 바 박스: 가로가 세로보다 길고, 내부가 밝게 채워진 직사각형
+        if aspect > 1.5 and fill > 0.65 and area > 800:
+            scale_mask[search_top + by: search_top + by + bh, bx: bx + bw] = 255
+
+    return scale_mask
+
+
+def segmentAndClassify(normalized_image, thresholds, params, original_image, scale_mask=None):
     total_pixels = normalized_image.size
 
-    # 1. 밝기 기반 마스크 생성 (우선순위: pore > si > intermetallic > alpha_al)
-    mask_pore  = cv2.inRange(normalized_image, thresholds['pore'][0],         thresholds['pore'][1])
-    mask_si    = cv2.inRange(normalized_image, thresholds['si'][0],           thresholds['si'][1])
-    mask_inter = cv2.inRange(normalized_image, thresholds['intermetallic'][0], thresholds['intermetallic'][1])
-    mask_alpha = cv2.inRange(normalized_image, thresholds['alpha_al'][0],      255)
+    # 1. 기공 / 알파-Al: 절대 밝기로 분리
+    mask_pore  = cv2.inRange(normalized_image, 0, thresholds['pore'][1])
+    mask_alpha = cv2.inRange(normalized_image, thresholds['alpha_al'][0], 255)
 
-    mask_si[mask_pore > 0] = 0
-    mask_inter[mask_pore > 0] = 0
-    mask_inter[mask_si > 0] = 0
-    mask_alpha[mask_pore > 0] = 0
-    mask_alpha[mask_si > 0] = 0
-    mask_alpha[mask_inter > 0] = 0
+    # 스케일 바 영역 모든 마스크에서 제외
+    if scale_mask is not None:
+        mask_pore [scale_mask > 0] = 0
+        mask_alpha[scale_mask > 0] = 0
 
-    # 2. 입자 분석 (ECD 포함)
-    pore_feats,  final_pore_mask  = analyzeFeatures(mask_pore,  params['min_areas']['pore'],         'pore')
-    inter_feats, final_inter_mask = analyzeFeatures(mask_inter, params['min_areas']['intermetallic'], 'intermetallic')
-    alpha_feats, final_alpha_mask = analyzeFeatures(mask_alpha, params['min_areas']['alpha_al'],      'alpha_al')
+    # 2. 2차 상 분리: Si 상한을 기준으로 하단/상단 두 구간으로 나눔
+    #
+    #   [하단 구간] dark_lo ~ si_upper  : 어두운 Si 영역
+    #              → 로컬 대비 필터 적용 (Al 덴드라이트 내부 오탐 방지)
+    #   [상단 구간] si_upper+1 ~ dark_hi: IM 영역 (밝기가 Al에 가까움)
+    #              → 로컬 대비 미적용 (β-Fe가 Si 옆에 있으면 로컬 대비가 역효과)
+    #              → 최대 면적 필터만 적용 (대형 Al 덴드라이트 블럭 제거)
+    dark_lo  = thresholds['si'][0]
+    si_upper = thresholds['si'][1]
+    im_lower = thresholds['intermetallic'][0]
+    dark_hi  = thresholds['intermetallic'][1]
 
-    # 3. Si: 면적 필터 후 형상 2차 필터 (eutectic Si 특징: 저원형도 + 고종횡비)
-    si_feats_cand, si_cand_mask = analyzeFeatures(mask_si, params['si_rules']['min_area'], 'eutectic_si')
-    final_si_mask = filterSiByShape(si_cand_mask, params['si_rules'])
+    def _make_mask(lo, hi):
+        m = cv2.inRange(normalized_image, lo, hi)
+        m[mask_pore > 0] = 0
+        if scale_mask is not None:
+            m[scale_mask > 0] = 0
+        return m
 
-    # filterSiByShape 통과한 입자만 si_feats로 남김
-    # (valid_mask에 남은 픽셀과 대조해 재필터)
-    si_feats = []
-    for feat in si_feats_cand:
-        x, y, w, h = feat['bbox_x'], feat['bbox_y'], feat['bbox_w'], feat['bbox_h']
-        roi_si_final = final_si_mask[y:y+h, x:x+w]
-        if np.any(roi_si_final > 0):
-            si_feats.append(feat)
+    mask_lower = _make_mask(dark_lo, si_upper)   # 로컬 대비 적용 구간
+    mask_upper = _make_mask(im_lower, dark_hi)   # 로컬 대비 미적용 구간 (IM 하한부터 시작)
+
+    # 3. 하단 구간에만 로컬 대비 필터 적용
+    lc = params.get('local_contrast', settings.LOCAL_CONTRAST)
+    if lc['min_diff'] > 0:
+        locally_dark = _locallyDarkMask(normalized_image, lc['kernel_size'], lc['min_diff'])
+        # 탈락 픽셀(주변과 밝기 유사) → Al 내부로 재분류
+        mask_rejected = cv2.bitwise_and(mask_lower, cv2.bitwise_not(locally_dark))
+        mask_lower    = cv2.bitwise_and(mask_lower, locally_dark)
+        mask_alpha    = cv2.bitwise_or(mask_alpha, mask_rejected)
+
+    # 4. 알파-Al에서 기공 / Si / IM 픽셀 제거
+    mask_alpha[mask_pore  > 0] = 0
+    mask_alpha[mask_lower > 0] = 0
+    mask_alpha[mask_upper > 0] = 0
+
+    # 5. 밝기 구간으로 직접 분리
+    #    하단 구간 → Eutectic Si
+    #    상단 구간 → Intermetallic
+    si_feats,    final_si_mask    = analyzeFeatures(mask_lower, params['si_rules']['min_area'],     'eutectic_si')
+    inter_feats, final_inter_mask = analyzeFeatures(mask_upper, params['min_areas']['intermetallic'], 'intermetallic')
+
+    # IM 최대 면적 필터: 너무 큰 덩어리 → Al 덴드라이트로 판단, Alpha-Al 재분류
+    max_im_area = params.get('max_areas', settings.MAX_AREAS).get('intermetallic', 0)
+    if max_im_area > 0:
+        kept, large_mask = [], np.zeros_like(final_inter_mask)
+        for feat in inter_feats:
+            if feat['area_pixels'] > max_im_area:
+                x, y, w, h = feat['bbox_x'], feat['bbox_y'], feat['bbox_w'], feat['bbox_h']
+                large_mask[y:y+h, x:x+w] = cv2.bitwise_or(
+                    large_mask[y:y+h, x:x+w], feat['roi_mask'] * 255
+                )
+                final_inter_mask[y:y+h, x:x+w] = cv2.bitwise_and(
+                    final_inter_mask[y:y+h, x:x+w],
+                    cv2.bitwise_not(feat['roi_mask'] * 255)
+                )
+            else:
+                kept.append(feat)
+        inter_feats = kept
+        mask_alpha = cv2.bitwise_or(mask_alpha, large_mask)
+
+    # 기공 / 알파-Al 입자 분석
+    pore_feats,  final_pore_mask  = analyzeFeatures(mask_pore,  params['min_areas']['pore'],    'pore')
+    alpha_feats, final_alpha_mask = analyzeFeatures(mask_alpha, params['min_areas']['alpha_al'], 'alpha_al')
 
     # 4. 분율 계산
     data = {
@@ -197,10 +292,21 @@ def segmentAndClassify(normalized_image, thresholds, params, original_image):
     return result_image, data
 
 
+def loadGrayImage(image_path):
+    """원본 이미지를 정규화된 그레이스케일로 반환 (GUI 호버용)"""
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return normalizeImage(gray)
+
+
 def analyzeImage(image_path, thresholds, all_params):
     original_image = cv2.imread(image_path)
     if original_image is None:
         return None, None
     gray = cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)
+    # 스케일 바는 CLAHE 전 원본 gray에서 감지 (밝기 값 그대로)
+    scale_mask = detectScaleBarMask(gray)
     norm = normalizeImage(gray)
-    return segmentAndClassify(norm, thresholds, all_params, original_image)
+    return segmentAndClassify(norm, thresholds, all_params, original_image, scale_mask)
